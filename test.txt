@@ -1,0 +1,3 @@
+input: stdin, single-path, many-path
+array: true, false
+header: none, ff, no, always

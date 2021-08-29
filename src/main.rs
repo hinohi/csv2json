@@ -1,10 +1,11 @@
-mod map;
-
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use structopt::{clap::Shell, StructOpt};
 
 use crate::map::Map;
+
+mod map;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "csv2json")]
@@ -16,9 +17,17 @@ struct Opts {
     #[structopt(
         short,
         long,
-        help = "CSV does not have a header line, so output arrays instead of objects"
+        help = "Dump JSON Array object instead of Key-Value object"
     )]
-    no_header: bool,
+    array: bool,
+    #[structopt(
+        short = "-H",
+        long,
+        name = "mode",
+        possible_values = &EmitHeader::variants(),
+        help = "Change emit header mode"
+    )]
+    header: Option<EmitHeader>,
     #[structopt(
         long,
         name = "shell",
@@ -26,6 +35,32 @@ struct Opts {
         help = "Generate tab-completion scripts for your shell"
     )]
     gen_completion: Option<Shell>,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+enum EmitHeader {
+    FistFileOnly,
+    No,
+    Always,
+}
+
+impl EmitHeader {
+    fn variants() -> [&'static str; 4] {
+        ["first-file-only", "ff", "no", "always"]
+    }
+}
+
+impl FromStr for EmitHeader {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s.to_ascii_lowercase().as_str() {
+            "first-file-only" | "ff" => Ok(EmitHeader::FistFileOnly),
+            "no" => Ok(EmitHeader::No),
+            "always" => Ok(EmitHeader::Always),
+            _ => Err(String::from(s)),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -50,7 +85,7 @@ fn main() -> Result<(), CliError> {
     if csv.is_empty() {
         csv.push(PathBuf::from("-"));
     }
-    run(&csv, opts.delimiter, opts.no_header)
+    run(&csv, opts.delimiter, opts.array, opts.header)
 }
 
 fn parse_delimiter(d: String) -> Result<u8, CliError> {
@@ -78,7 +113,12 @@ fn detect_delimiter(path: &Path, delimiter: Option<u8>) -> u8 {
     })
 }
 
-fn run(csv: &[PathBuf], delimiter: Option<String>, no_header: bool) -> Result<(), CliError> {
+fn run(
+    csv: &[PathBuf],
+    delimiter: Option<String>,
+    array: bool,
+    header: Option<EmitHeader>,
+) -> Result<(), CliError> {
     let delimiter = if let Some(d) = delimiter {
         Some(parse_delimiter(d)?)
     } else {
@@ -86,7 +126,14 @@ fn run(csv: &[PathBuf], delimiter: Option<String>, no_header: bool) -> Result<()
     };
     let stdout = std::io::stdout();
     let mut writer = stdout.lock();
-    for path in csv {
+    let header = header.unwrap_or_else(|| {
+        if array {
+            EmitHeader::Always
+        } else {
+            EmitHeader::No
+        }
+    });
+    for (i, path) in csv.iter().enumerate() {
         let delimiter = detect_delimiter(path, delimiter);
         let reader: Box<dyn std::io::Read> = if path.to_str() == Some("-") {
             Box::new(std::io::stdin())
@@ -97,34 +144,53 @@ fn run(csv: &[PathBuf], delimiter: Option<String>, no_header: bool) -> Result<()
             .delimiter(delimiter)
             .has_headers(false)
             .from_reader(reader);
-        pipe(csv_reader, &mut writer, no_header)?
+        let header = match header {
+            EmitHeader::FistFileOnly => i == 0,
+            EmitHeader::No => false,
+            EmitHeader::Always => true,
+        };
+        pipe(csv_reader, &mut writer, array, header)?
     }
     Ok(())
 }
 
-fn pipe<R, W>(mut reader: csv::Reader<R>, writer: &mut W, no_header: bool) -> Result<(), CliError>
+fn pipe<R, W>(
+    mut reader: csv::Reader<R>,
+    writer: &mut W,
+    array: bool,
+    header: bool,
+) -> Result<(), CliError>
 where
     R: std::io::Read,
     W: std::io::Write,
 {
-    if no_header {
-        for record in reader.records() {
+    let mut records = reader.records();
+    let first_record = match records.next() {
+        Some(first_record) => first_record?,
+        None => return Ok(()),
+    };
+    let first_record = first_record.iter().collect::<Vec<_>>();
+    if array {
+        if header {
+            serde_json::to_writer(&mut *writer, &first_record)?;
+            writeln!(writer)?;
+        }
+        for record in records {
             let record = record?;
             let record = record.iter().collect::<Vec<_>>();
             serde_json::to_writer(&mut *writer, &record)?;
             writeln!(writer)?;
         }
     } else {
-        let mut records = reader.records();
-        let headers = match records.next() {
-            Some(first_record) => first_record?,
-            None => return Ok(()),
-        };
-        let headers = headers.iter().collect::<Vec<_>>();
+        if header {
+            let map = Map::new(&first_record, &first_record);
+            serde_json::to_writer(&mut *writer, &map)?;
+            writeln!(writer)?;
+        }
         for record in records {
             let record = record?;
             let record = record.iter().collect::<Vec<_>>();
-            let map = Map::new(&headers, &record);
+            let map = Map::new(&first_record, &record);
             serde_json::to_writer(&mut *writer, &map)?;
             writeln!(writer)?;
         }
