@@ -112,7 +112,7 @@ where
             let record = record?;
             let record = record.iter().collect::<Vec<_>>();
             serde_json::to_writer(&mut *writer, &record)?;
-            writeln!(writer, "")?;
+            writeln!(writer)?;
         }
     } else {
         let mut records = reader.records();
@@ -126,7 +126,7 @@ where
             let record = record.iter().collect::<Vec<_>>();
             let map = Map::new(&headers, &record);
             serde_json::to_writer(&mut *writer, &map)?;
-            writeln!(writer, "")?;
+            writeln!(writer)?;
         }
     }
     Ok(())
