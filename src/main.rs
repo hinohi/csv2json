@@ -54,6 +54,9 @@ fn main() -> Result<(), CliError> {
 }
 
 fn parse_delimiter(d: String) -> Result<u8, CliError> {
+    if &d == "\\t" {
+        return Ok(b'\t');
+    }
     let b = d.as_bytes();
     if b.len() != 1 {
         return Err(CliError::InvalidDelimiter(d));
